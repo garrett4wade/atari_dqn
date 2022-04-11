@@ -170,6 +170,27 @@ class AtariDQN(nn.Module):
         return nn.Sequential(*layers)
 
 
+class MLPDQN(nn.Module):
+
+    def __init__(self,
+                 obs_dim,
+                 act_dim,
+                 act_fn,
+                 hidden_dim=128,
+                 dueling=False):
+        super().__init__()
+        self.base = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            act_fn(),
+            nn.Linear(hidden_dim, hidden_dim),
+            act_fn(),
+        )
+        self.fc = PopArtValueHead(hidden_dim, act_dim, dueling=dueling)
+
+    def forward(self, x):
+        return self.fc(self.base(x))
+
+
 class RunningMeanStd(nn.Module):
 
     def __init__(self, input_shape, beta=0.999, epsilon=1e-5):

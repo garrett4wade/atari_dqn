@@ -4,38 +4,42 @@ import logging
 import numpy as np
 import torch
 
+from core import ReplayBuffer, AtariDQN, MLPDQN
+
 logging.basicConfig(
     format=
     "%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
 
 logger = logging.getLogger('atari')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 fh = logging.FileHandler('results/log.txt', mode='w')
 fh.setLevel(logging.INFO)
 logger.addHandler(fh)
 
-from core import ReplayBuffer, AtariDQN
-
 
 def pixel_to_float(x):
-    return np.array(x, dtype=np.float32) / 255
+    if x.dtype == np.uint8 and len(x.shape) > 1:
+        return np.array(x, dtype=np.float32) / 255
+    else:
+        return x
 
 
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
-    env = gym.wrappers.AtariPreprocessing(
-        env,
-        noop_max=30,
-        frame_skip=4,
-        screen_size=84,
-        scale_obs=False,
-    )
-    env = gym.wrappers.FrameStack(env, 4)
     env = gym.wrappers.RecordEpisodeStatistics(env)
-    if eval_:
-        # env = gym.wrappers.RecordVideo(env, './results')
-        pass
+    if "NoFrameskip" in env_name:
+        env = gym.wrappers.AtariPreprocessing(
+            env,
+            noop_max=30,
+            frame_skip=4,
+            screen_size=84,
+            scale_obs=False,
+        )
+        env = gym.wrappers.FrameStack(env, 4)
+        if eval_:
+            # env = gym.wrappers.RecordVideo(env, './results')
+            pass
     return env
 
 
@@ -84,13 +88,12 @@ def dqn_loss(q1_net,
     return loss.mean()
 
 
-def eval_dqn(q_net, eval_env, n_episodes=2, device=torch.device("cuda:0")):
+def eval_dqn(q_net, eval_env, n_episodes=20, device=torch.device("cuda:0")):
     ep_cnt = total_ep_step = total_ep_ret = total_time = 0
     while ep_cnt < n_episodes:
         obs = eval_env.reset()
         done = False
         while not done:
-            assert obs.dtype == np.uint8
             obs_net = torch.from_numpy(
                 pixel_to_float(obs)).unsqueeze(0).to(device)
             act = q_net(obs_net).argmax(-1).item()
@@ -135,7 +138,6 @@ def train_dqn(q1_net,
 
     obs = train_env.reset()
     for _ in range(warmup_steps):
-        assert obs.dtype == np.uint8
         act = train_env.action_space.sample()
         obs_, rew, don, info = train_env.step(act)
         buffer.put(obs, act, obs_, rew, don)
@@ -151,7 +153,6 @@ def train_dqn(q1_net,
     while env_frames < total_env_steps:
         log_info = {}
 
-        assert obs.dtype == np.uint8
         obs_net = torch.from_numpy(pixel_to_float(obs)).unsqueeze(0).to(device)
         if np.random.rand() < eps:
             act = train_env.action_space.sample()
@@ -238,21 +239,38 @@ def main():
 
     train_env = make_env(args.env_name)
     eval_env = make_env(args.env_name, eval_=True)
-    obs = train_env.reset()
 
     act_dim = train_env.action_space.n
-    buffer = ReplayBuffer(int(1e6), (4, 84, 84), act_dim)
+    buffer = ReplayBuffer(int(1e6), train_env.observation_space.shape, act_dim)
 
-    q1_net = AtariDQN([3, 3, 3, 3],
-                      act_dim,
-                      act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                              if not args.linear else torch.nn.Identity),
-                      dueling=args.dueling).to(device)
-    q2_net = AtariDQN([3, 3, 3, 3],
-                      act_dim,
-                      act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                              if not args.linear else torch.nn.Identity),
-                      dueling=args.dueling).to(device)
+    if "NoFrameskip" in args.env_name:
+        q1_net = AtariDQN(
+            [3, 3, 3, 3],
+            act_dim,
+            act_fn=(lambda: torch.nn.ReLU(inplace=True)
+                    if not args.linear else torch.nn.Identity),
+            dueling=args.dueling,
+        ).to(device)
+        q2_net = AtariDQN(
+            [3, 3, 3, 3],
+            act_dim,
+            act_fn=(lambda: torch.nn.ReLU(inplace=True)
+                    if not args.linear else torch.nn.Identity),
+            dueling=args.dueling,
+        ).to(device)
+    else:
+        q1_net = MLPDQN(
+            train_env.observation_space.shape[0],
+            act_dim,
+            act_fn=(lambda: torch.nn.ReLU(inplace=True)
+                    if not args.linear else torch.nn.Identity),
+        ).to(device)
+        q2_net = MLPDQN(
+            train_env.observation_space.shape[0],
+            act_dim,
+            act_fn=(lambda: torch.nn.ReLU(inplace=True)
+                    if not args.linear else torch.nn.Identity),
+        ).to(device)
     if not args.double:
         q2_net.load_state_dict(q1_net.state_dict())
 
