@@ -3,6 +3,7 @@ import gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ReplayBuffer:
@@ -20,6 +21,7 @@ class ReplayBuffer:
 
     def put_batch(self, s, a, n_s, r, d):
         bs = len(r)
+        ptr = self.ptr
         if self.ptr + bs > self.max_size:
             self.state[ptr:] = s[:self.max_size - ptr]
             self.action[ptr:] = a[:self.max_size - ptr]
@@ -43,11 +45,11 @@ class ReplayBuffer:
         self.cur_size = min(self.cur_size + bs, self.max_size)
 
     def put(self, s, a, n_s, r, d):
-        self.state[ptr] = s
-        self.action[ptr] = a
-        self.nex_state[ptr] = n_s
-        self.reward[ptr] = r
-        self.done[ptr] = d
+        self.state[self.ptr] = s
+        self.action[self.ptr] = a
+        self.nex_state[self.ptr] = n_s
+        self.reward[self.ptr] = r
+        self.done[self.ptr] = d
         self.ptr = (self.ptr + 1) % self.max_size
         self.cur_size = min(self.cur_size + 1, self.max_size)
 
@@ -127,7 +129,7 @@ class AtariDQN(nn.Module):
                                   batchnorm=batchnorm)
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=False),
+            nn.Conv2d(4, 64, 3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(64), nn.ReLU(inplace=True))
 
         self.conv2 = self._make_layer(block, num_blocks[0], 64, 1)
@@ -135,13 +137,11 @@ class AtariDQN(nn.Module):
         self.conv4 = self._make_layer(block, num_blocks[2], 128, 2)
         self.conv5 = self._make_layer(block, num_blocks[3], 128, 2)
         self.avg = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512, act_dim)
-
-        self._dueling = dueling
-        if dueling:
-            self.v = nn.Linear(512, 1)
+        self.fc = PopArtValueHead(512, act_dim, dueling=dueling)
 
     def forward(self, x):
+        assert x.dtype == torch.float32, x.dtype
+        assert (0 <= x).all() and (x <= 1).all()
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -149,11 +149,7 @@ class AtariDQN(nn.Module):
         x = self.conv5(x)
         x = self.avg(x)
         x = x.view(x.size(0), -1)
-        out = self.fc(x)
-        if self._dueling:
-            return out + self.v(x)
-        else:
-            return out
+        return self.fc(x)
 
     def _make_layer(self, block, num_block, out_channels, stride):
         """Building resnext block
@@ -172,3 +168,130 @@ class AtariDQN(nn.Module):
             self.in_channels = out_channels * 4
 
         return nn.Sequential(*layers)
+
+
+class RunningMeanStd(nn.Module):
+
+    def __init__(self, input_shape, beta=0.999, epsilon=1e-5):
+        super().__init__()
+        self.__beta = beta
+        self.__eps = epsilon
+        self.__input_shape = input_shape
+
+        self.__mean = nn.Parameter(torch.zeros(input_shape),
+                                   requires_grad=False)
+        self.__mean_sq = nn.Parameter(torch.zeros(input_shape),
+                                      requires_grad=False)
+        self.__debiasing_term = nn.Parameter(torch.zeros(1),
+                                             requires_grad=False)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.__mean.zero_()
+        self.__mean_sq.zero_()
+        self.__debiasing_term.zero_()
+
+    def forward(self, *args, **kwargs):
+        # we don't implement the forward function because its meaning
+        # is somewhat ambiguous
+        raise NotImplementedError
+
+    def __check(self, x):
+        assert isinstance(x, torch.Tensor)
+        trailing_shape = x.shape[-len(self.__input_shape):]
+        assert trailing_shape == self.__input_shape, (
+            'Trailing shape of input tensor'
+            f'{x.shape} does not equal to configured input shape {self.__input_shape}'
+        )
+
+    @torch.no_grad()
+    def update(self, x):
+        self.__check(x)
+        norm_dims = tuple(range(len(x.shape) - len(self.__input_shape)))
+
+        batch_mean = x.mean(dim=norm_dims)
+        batch_sq_mean = x.square().mean(dim=norm_dims)
+
+        self.__mean.mul_(self.__beta).add_(batch_mean * (1.0 - self.__beta))
+        self.__mean_sq.mul_(self.__beta).add_(batch_sq_mean *
+                                              (1.0 - self.__beta))
+        self.__debiasing_term.mul_(self.__beta).add_(1.0 * (1.0 - self.__beta))
+
+    @torch.no_grad()
+    def mean_std(self):
+        debiased_mean = self.__mean / self.__debiasing_term.clamp(
+            min=self.__eps)
+        debiased_mean_sq = self.__mean_sq / self.__debiasing_term.clamp(
+            min=self.__eps)
+        debiased_var = (debiased_mean_sq - debiased_mean**2).clamp(min=1e-2)
+        return debiased_mean, debiased_var.sqrt()
+
+    @torch.no_grad()
+    def normalize(self, x):
+        self.__check(x)
+        mean, std = self.mean_std()
+        return (x - mean) / std
+
+    @torch.no_grad()
+    def denormalize(self, x):
+        self.__check(x)
+        mean, std = self.mean_std()
+        return x * std + mean
+
+
+class PopArtValueHead(nn.Module):
+
+    def __init__(self,
+                 input_dim,
+                 act_dim,
+                 beta=0.999,
+                 epsilon=1e-5,
+                 dueling=False):
+        super().__init__()
+        self.__rms = RunningMeanStd((1, ), beta, epsilon)
+
+        self.__weight = nn.Parameter(torch.zeros(act_dim, input_dim))
+        nn.init.orthogonal_(self.__weight)
+        self.__bias = nn.Parameter(torch.zeros(act_dim))
+
+        self.__dueling = dueling
+        if dueling:
+            self.__v_weight = nn.Parameter(torch.zeros(1, input_dim))
+            self.__v_bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self, feature):
+        if not self.__dueling:
+            return F.linear(feature, self.__weight, self.__bias)
+        else:
+            adv = F.linear(feature, self.__weight, self.__bias)
+            v = F.linear(feature, self.__v_weight, self.__v_bias)
+            return adv + v
+
+    @torch.no_grad()
+    def update(self, x):
+        old_mean, old_std = self.__rms.mean_std()
+        self.__rms.update(x)
+        new_mean, new_std = self.__rms.mean_std()
+
+        self.__weight.data[:] = self.__weight * (old_std /
+                                                 new_std).unsqueeze(-1)
+        self.__bias.data[:] = (old_std * self.__bias + old_mean -
+                               new_mean) / new_std
+        if self.__dueling:
+            self.__v_weight.data[:] = self.__v_weight * (old_std /
+                                                         new_std).unsqueeze(-1)
+            self.__v_bias.data[:] = (old_std * self.__v_bias + old_mean -
+                                     new_mean) / new_std
+
+    @torch.no_grad()
+    def normalize(self, x):
+        return self.__rms.normalize(x)
+
+    @torch.no_grad()
+    def denormalize(self, x):
+        return self.__rms.denormalize(x)
+
+    @torch.no_grad()
+    def mean_std(self):
+        return self.__rms.mean_std()
