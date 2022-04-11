@@ -64,21 +64,21 @@ def dqn_loss(q1_net,
 
     with torch.no_grad():
         if double:
-            n_a = q1_net(s).argmax(-1)
-            n_qa = q2_net(n_s).gather(-1, n_a.unsqueeze(-1))
+            n_a = q1_net(n_s).argmax(-1, keepdim=True)
+            n_qa = q2_net(n_s).gather(-1, n_a)
         else:
             n_qa = q2_net(n_s).max(-1, keepdim=True).values
         assert n_qa.shape[-1] == 1
-        n_qa = q2_net.fc.denormalize(n_qa).squeeze(-1)
+        # n_qa = q2_net.fc.denormalize(n_qa).squeeze(-1)
 
         q_target = r + gamma * (1 - d) * n_qa
 
-        q1_net.fc.update(q_target.unsqueeze(-1))
+        # q1_net.fc.update(q_target.unsqueeze(-1))
 
         mu, sigma = q1_net.fc.mean_std()
         logger.debug(f"Update PopArt to Mean {mu.item()} Std {sigma.item()}")
 
-        q_target = q1_net.fc.normalize(q_target.unsqueeze(-1))
+        # q_target = q1_net.fc.normalize(q_target.unsqueeze(-1))
         q_target = q_target.squeeze(-1)
 
     qa = q1_net(s).gather(-1, a.unsqueeze(-1).long()).squeeze(-1)
@@ -117,8 +117,8 @@ def train_dqn(q1_net,
               train_env,
               eval_env,
               use_wandb,
-              eval_interval=100,
-              log_interval=100,
+              eval_interval=500,
+              log_interval=500,
               warmup_steps=1000,
               total_env_steps=int(5e6),
               lr=1e-4,
@@ -193,15 +193,15 @@ def train_dqn(q1_net,
         step += 1
         env_frames += 1
 
-        if not double and step % target_update_interval == 0 and step > 0:
+        if not double and step % target_update_interval == 0:
             q2_net.load_state_dict(q1_net.state_dict())
             logger.info("Update target network.")
 
-        if step % eval_interval == 0 and step > 0:
+        if step % eval_interval == 0:
             eval_info = eval_dqn(q1_net, eval_env)
             log_info = dict(eval_info, **log_info)
 
-        if step % log_interval == 0 and step > 0:
+        if step % log_interval == 0:
             if use_wandb:
                 wandb.log(log_info, step=env_frames)
             torch.save(q1_net.state_dict(), f"./results/ckpt_{step}.pt")
