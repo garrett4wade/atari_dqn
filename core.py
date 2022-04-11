@@ -9,8 +9,12 @@ import torch.nn.functional as F
 class ReplayBuffer:
 
     def __init__(self, max_size, obs_shape, act_dim):
-        self.state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
-        self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
+        if len(obs_shape) > 1:
+            self.state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
+            self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
+        else:
+            self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
+            self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
         self.action = np.zeros(max_size, dtype=np.uint8)
         self.reward = np.zeros(max_size, dtype=np.float32)
         self.done = np.zeros(max_size, dtype=np.uint8)
@@ -193,7 +197,7 @@ class MLPDQN(nn.Module):
 
 class RunningMeanStd(nn.Module):
 
-    def __init__(self, input_shape, beta=0.999, epsilon=1e-5):
+    def __init__(self, input_shape, beta=0.99999, epsilon=1e-5):
         super().__init__()
         self.__beta = beta
         self.__eps = epsilon

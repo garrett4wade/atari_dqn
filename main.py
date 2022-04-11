@@ -17,6 +17,12 @@ fh = logging.FileHandler('results/log.txt', mode='w')
 fh.setLevel(logging.INFO)
 logger.addHandler(fh)
 
+try:
+    import wandb
+except ModuleNotFoundError:
+    logger.info(
+        "wandb not installed. Code runs fine without logging to the web.")
+
 
 def pixel_to_float(x):
     if x.dtype == np.uint8 and len(x.shape) > 1:
@@ -69,17 +75,18 @@ def dqn_loss(q1_net,
         else:
             n_qa = q2_net(n_s).max(-1, keepdim=True).values
         assert n_qa.shape[-1] == 1
-        # n_qa = q2_net.fc.denormalize(n_qa).squeeze(-1)
+        # n_qa = q2_net.fc.denormalize(n_qa)
 
-        q_target = r + gamma * (1 - d) * n_qa
+        q_target = r + gamma * (1 - d) * n_qa.squeeze(-1)
+        # q_target = q_target.unsqueeze(-1)
 
-        # q1_net.fc.update(q_target.unsqueeze(-1))
+        # q1_net.fc.update(q_target)
 
-        mu, sigma = q1_net.fc.mean_std()
-        logger.debug(f"Update PopArt to Mean {mu.item()} Std {sigma.item()}")
+        # mu, sigma = q1_net.fc.mean_std()
+        # logger.debug(f"Update PopArt to Mean {mu.item()} Std {sigma.item()}")
 
-        # q_target = q1_net.fc.normalize(q_target.unsqueeze(-1))
-        q_target = q_target.squeeze(-1)
+        # q_target = q1_net.fc.normalize(q_target)
+        # q_target = q_target.squeeze(-1)
 
     qa = q1_net(s).gather(-1, a.unsqueeze(-1).long()).squeeze(-1)
     assert len(qa.shape) == 1 and len(q_target.shape) == 1, (qa.shape,
@@ -88,7 +95,12 @@ def dqn_loss(q1_net,
     return loss.mean()
 
 
-def eval_dqn(q_net, eval_env, n_episodes=20, device=torch.device("cuda:0")):
+def eval_dqn(q_net,
+             eval_env,
+             n_episodes=20,
+             device=torch.device("cuda:0"),
+             deterministic=False,
+             eps=0.05):
     ep_cnt = total_ep_step = total_ep_ret = total_time = 0
     while ep_cnt < n_episodes:
         obs = eval_env.reset()
@@ -97,6 +109,8 @@ def eval_dqn(q_net, eval_env, n_episodes=20, device=torch.device("cuda:0")):
             obs_net = torch.from_numpy(
                 pixel_to_float(obs)).unsqueeze(0).to(device)
             act = q_net(obs_net).argmax(-1).item()
+            if not deterministic and np.random.rand() < eps:
+                act = eval_env.action_space.sample()
             obs, _, done, info = eval_env.step(act)
         ep_cnt += 1
         total_ep_ret += info['episode']['r']
@@ -219,15 +233,23 @@ def main():
     parser.add_argument("--double", action="store_true")
     parser.add_argument("--linear", action='store_true')
     parser.add_argument("--wandb", action='store_true')
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
 
     try:
         import wandb
         if args.wandb:
             wandb_run = wandb.init(project='atari_dqn',
                                    config=vars(args),
-                                   group=None,
-                                   name=None)
+                                   group=args.group,
+                                   name=f"seed{args.seed}")
         else:
             wandb_run = None
     except ModuleNotFoundError:
@@ -248,14 +270,14 @@ def main():
             [3, 3, 3, 3],
             act_dim,
             act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                    if not args.linear else torch.nn.Identity),
+                    if not args.linear else torch.nn.Identity()),
             dueling=args.dueling,
         ).to(device)
         q2_net = AtariDQN(
             [3, 3, 3, 3],
             act_dim,
             act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                    if not args.linear else torch.nn.Identity),
+                    if not args.linear else torch.nn.Identity()),
             dueling=args.dueling,
         ).to(device)
     else:
@@ -263,19 +285,16 @@ def main():
             train_env.observation_space.shape[0],
             act_dim,
             act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                    if not args.linear else torch.nn.Identity),
+                    if not args.linear else torch.nn.Identity()),
         ).to(device)
         q2_net = MLPDQN(
             train_env.observation_space.shape[0],
             act_dim,
             act_fn=(lambda: torch.nn.ReLU(inplace=True)
-                    if not args.linear else torch.nn.Identity),
+                    if not args.linear else torch.nn.Identity()),
         ).to(device)
     if not args.double:
         q2_net.load_state_dict(q1_net.state_dict())
-
-    # eval_info = eval_dqn(q1_net, eval_env, n_episodes=2)
-    # print(eval_info)
 
     train_dqn(q1_net,
               q2_net,
