@@ -1,3 +1,4 @@
+from collections import deque
 import argparse
 import gym
 import logging
@@ -82,33 +83,27 @@ def make_env(env_name, eval_=False):
     return env
 
 
-def eval_dqn(q_net,
-             eval_env,
-             n_episodes=20,
-             device=T.device("cuda:0"),
-             deterministic=False,
-             eps=0.05):
-    ep_cnt = total_ep_step = total_ep_ret = total_time = 0
+def eval_dqn(
+        agent,
+        eval_env,
+        n_episodes=20,
+        device=T.device("cuda:0")
+    if T.cuda.is_available() else T.device("cpu"),
+):
+    ep_cnt = total_ep_step = total_ep_ret = 0
+    obs = eval_env.reset()
     while ep_cnt < n_episodes:
-        obs = eval_env.reset()
-        done = False
-        while not done:
-            obs_net = T.from_numpy(pixel_to_float(obs)).unsqueeze(0).to(device)
-            act = q_net(obs_net).argmax(-1).item()
-            if not deterministic and np.random.rand() < eps:
-                act = eval_env.action_space.sample()
-            obs, _, done, info = eval_env.step(act)
-        ep_cnt += 1
-        total_ep_ret += info['episode']['r']
-        total_ep_step += info['episode']['l']
-        total_time += info['episode']['t']
-    logger.info(
-        f"Evaluation {n_episodes}, Episode Return {total_ep_ret / n_episodes}"
-        f", Episode Length {total_ep_step / n_episodes}"
-        f", Time/Episode {total_time / n_episodes}s ({total_time}s in total)")
-    return dict(eval_episode_return=total_ep_ret / n_episodes,
-                eval_episode_length=total_ep_step / n_episodes,
-                eval_time=total_time / n_episodes)
+        action = agent.choose_action(obs)
+        obs, _, done, info = eval_env.step(action)
+        for d, inf in zip(done, info):
+            if d:
+                ep_cnt += 1
+                total_ep_ret += inf['episode']['r']
+                total_ep_step += inf['episode']['l']
+    return dict(
+        eval_episode_return=total_ep_ret / n_episodes,
+        eval_episode_length=total_ep_step / n_episodes,
+    )
 
 
 class Agent():
@@ -213,11 +208,13 @@ class Agent():
         self.learn_step_counter += 1
 
         self.epsilon = max(self.eps_min, self.epsilon - self.eps_dec)
+        return loss.item()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", type=str, default="CartPole-v1")
+    parser.add_argument("--group", type=str)
     parser.add_argument("--dueling", action='store_true')
     parser.add_argument("--double", action="store_true")
     parser.add_argument("--linear", action='store_true')
@@ -256,6 +253,9 @@ if __name__ == '__main__':
     act_dim = train_env.action_space.n
 
     total_env_steps = int(5e6)
+    eval_interval = int(1e3)
+    log_interval = int(1e3)
+    save_interval = int(5e4)
 
     agent = Agent(gamma=0.99,
                   epsilon=1.0,
@@ -270,29 +270,57 @@ if __name__ == '__main__':
                   batch_size=64,
                   eps_dec=1e-3,
                   replace=100)
-    scores = []
 
-    n_env_steps = i = 0
+    scores = deque(maxlen=100)
+    losses = deque(maxlen=1000)
+
+    n_env_steps = ep_cnt = 0
     observation = train_env.reset()
     while n_env_steps < total_env_steps:
         action = agent.choose_action(observation)
         observation_, reward, done, info = train_env.step(action)
 
         agent.memory.put_batch(observation, action, observation_, reward, done)
-        agent.learn()
+        loss = agent.learn()
+
+        if loss is not None:
+            losses.append(loss)
 
         observation = observation_
 
         for d, inf in zip(done, info):
             if d:
-                i += 1
+                ep_cnt += 1
                 scores.append(inf['episode']['r'])
-                avg_score = np.mean(scores[max(0, i - 100):(i + 1)])
-                print('episode: ', i, 'score %.1f ' % inf['episode']['r'],
-                      ' average score %.1f' % avg_score,
-                      'epsilon %.2f' % agent.epsilon)
 
-    x = [i + 1 for i in range(num_games)]
+        n_env_steps += 1
+
+        if n_env_steps % log_interval == 0:
+            avg_score = np.mean(scores)
+            logger.info(''.join([
+                f'Environment Steps {n_env_steps}/{total_env_steps}',
+                f'\t Number of Episodes: {ep_cnt}',
+                '\t Average Score %.1f' % avg_score,
+                '\t Epsilon %.2f' % agent.epsilon
+            ]))
+            if wandb_run is not None and args.wandb:
+                wandb.log(dict(train_episode_return=avg_score, eps=agent.epsilon, loss=np.mean(losses)), n_env_steps)
+
+        if n_env_steps % eval_interval == 0:
+            eval_info = eval_dqn(agent, eval_env)
+            logger.info(
+                f"Evaluation Episode Return {eval_info['eval_episode_return']}"
+                f", Episode Length {eval_info['eval_episode_length']}.")
+            if wandb_run is not None and args.wandb:
+                wandb.log(eval_info, n_env_steps)
+
+        if n_env_steps % save_interval == 0:
+            fname = "dqn"
+            if args.linear:
+                fname += "_linear"
+            if args.double:
+                fname += "_double"
+            T.save(agent.q_eval.state_dict(), f"results/{fname}_{n_env_steps}.pt")
 
     if wandb_run is not None:
         wandb_run.finish()
