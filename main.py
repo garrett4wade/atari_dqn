@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from core import ReplayBuffer
+from core import ReplayBuffer, AtariDQN, DQN
 from env_wrapper import SubprocVecEnv
 
 logging.basicConfig(
@@ -37,34 +37,6 @@ def pixel_to_float(x):
         return x
 
 
-class DQN(nn.Module):
-
-    def __init__(self, obs_dim, act_dim, linear, dueling, hidden_dim=512):
-        super().__init__()
-
-        self.fc1 = nn.Linear(obs_dim, hidden_dim)
-        self.linear = linear
-        self.dueling = dueling
-        if dueling:
-            self.V = nn.Linear(hidden_dim, 1)
-            self.A = nn.Linear(hidden_dim, act_dim)
-        else:
-            self.Q = nn.Linear(hidden_dim, act_dim)
-
-        self.device = T.device("cpu")
-
-    def forward(self, state):
-        act_fn = (lambda x: x) if self.linear else F.relu
-        flat1 = act_fn(self.fc1(state))
-        if self.dueling:
-            V = self.V(flat1)
-            A = self.A(flat1)
-
-            return V + A - A.mean(-1, keepdim=True)
-        else:
-            return self.Q(flat1)
-
-
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
     env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -75,11 +47,14 @@ def make_env(env_name, eval_=False):
             frame_skip=4,
             screen_size=84,
             scale_obs=False,
+            terminal_on_life_loss=True,
         )
         env = gym.wrappers.FrameStack(env, 4)
         if eval_:
             # env = gym.wrappers.RecordVideo(env, './results')
             pass
+        else:
+            env = gym.wrappers.TransformReward(env, lambda x: np.sign(x))
     return env
 
 
@@ -140,20 +115,35 @@ class Agent():
 
         self.memory = ReplayBuffer(mem_size, input_dims)
 
-        self.q_eval = DQN(
-            *self.input_dims,
-            self.n_actions,
-            dueling=dueling,
-            linear=linear,
-        )
+        if len(self.input_dims) == 1:
+            self.q_eval = DQN(
+                *self.input_dims,
+                self.n_actions,
+                dueling=dueling,
+                linear=linear,
+            )
+        else:
+            self.q_eval = AtariDQN(
+                self.n_actions,
+                linear=linear,
+                dueling=dueling,
+            )
+
         self.optimizer = T.optim.Adam(self.q_eval.parameters(), lr=lr)
 
-        self.q_next = DQN(
-            *self.input_dims,
-            self.n_actions,
-            dueling=dueling,
-            linear=linear,
-        )
+        if len(self.input_dims) == 1:
+            self.q_next = DQN(
+                *self.input_dims,
+                self.n_actions,
+                dueling=dueling,
+                linear=linear,
+            )
+        else:
+            self.q_next = AtariDQN(
+                self.n_actions,
+                linear=linear,
+                dueling=dueling,
+            )
 
     def choose_action(self, observation):
         state = T.tensor(pixel_to_float(observation),
@@ -304,7 +294,10 @@ if __name__ == '__main__':
                 '\t Epsilon %.2f' % agent.epsilon
             ]))
             if wandb_run is not None and args.wandb:
-                wandb.log(dict(train_episode_return=avg_score, eps=agent.epsilon, loss=np.mean(losses)), n_env_steps)
+                wandb.log(
+                    dict(train_episode_return=avg_score,
+                         eps=agent.epsilon,
+                         loss=np.mean(losses)), n_env_steps)
 
         if n_env_steps % eval_interval == 0:
             eval_info = eval_dqn(agent, eval_env)
@@ -320,7 +313,8 @@ if __name__ == '__main__':
                 fname += "_linear"
             if args.double:
                 fname += "_double"
-            T.save(agent.q_eval.state_dict(), f"results/{fname}_{n_env_steps}.pt")
+            T.save(agent.q_eval.state_dict(),
+                   f"results/{fname}_{n_env_steps}.pt")
 
     if wandb_run is not None:
         wandb_run.finish()
