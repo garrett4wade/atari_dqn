@@ -8,14 +8,14 @@ import torch.nn.functional as F
 
 class ReplayBuffer:
 
-    def __init__(self, max_size, obs_shape, act_dim):
+    def __init__(self, max_size, obs_shape):
         if len(obs_shape) > 1:
             self.state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
             self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
         else:
             self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
             self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
-        self.action = np.zeros(max_size, dtype=np.uint8)
+        self.action = np.zeros(max_size, dtype=np.int64)
         self.reward = np.zeros(max_size, dtype=np.float32)
         self.done = np.zeros(max_size, dtype=np.uint8)
 
