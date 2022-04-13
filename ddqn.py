@@ -37,10 +37,11 @@ def pixel_to_float(x):
 
 class DQN(nn.Module):
 
-    def __init__(self, obs_dim, act_dim, dueling, hidden_dim=512):
+    def __init__(self, obs_dim, act_dim, linear, dueling, hidden_dim=512):
         super().__init__()
 
         self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.linear = linear
         self.dueling = dueling
         if dueling:
             self.V = nn.Linear(hidden_dim, 1)
@@ -51,7 +52,8 @@ class DQN(nn.Module):
         self.device = T.device("cpu")
 
     def forward(self, state):
-        flat1 = F.relu(self.fc1(state))
+        act_fn = (lambda x: x) if self.linear else F.relu
+        flat1 = act_fn(self.fc1(state))
         if self.dueling:
             V = self.V(flat1)
             A = self.A(flat1)
@@ -118,6 +120,8 @@ class Agent():
                  input_dims,
                  mem_size,
                  batch_size,
+                 double,
+                 linear,
                  dueling,
                  eps_min=0.01,
                  eps_dec=5e-7,
@@ -136,12 +140,15 @@ class Agent():
         self.action_space = [i for i in range(self.n_actions)]
         self.learn_step_counter = 0
 
+        self.double = double
+
         self.memory = ReplayBuffer(mem_size, input_dims)
 
         self.q_eval = DQN(
             *self.input_dims,
             self.n_actions,
-            dueling=dueling
+            dueling=dueling,
+            linear=linear,
         )
         self.optimizer = T.optim.Adam(self.q_eval.parameters(), lr=lr)
 
@@ -149,6 +156,7 @@ class Agent():
             *self.input_dims,
             self.n_actions,
             dueling=dueling,
+            linear=linear,
         )
 
     def choose_action(self, observation):
@@ -190,7 +198,10 @@ class Agent():
         max_actions = T.argmax(q_eval, dim=1)
 
         q_next[dones] = 0.0
-        q_next = q_next[indices, max_actions]
+        if self.double:
+            q_next = q_next[indices, max_actions]
+        else:
+            q_next = q_next.max(-1).values
         q_target = rewards + self.gamma * q_next
 
         loss = ((q_target - q_pred)**2).mean()
@@ -249,6 +260,8 @@ if __name__ == '__main__':
                   n_actions=train_env.action_space.n,
                   mem_size=int(1e5),
                   dueling=args.dueling,
+                  linear=args.linear,
+                  double=args.double,
                   eps_min=0.01,
                   batch_size=64,
                   eps_dec=1e-3,
