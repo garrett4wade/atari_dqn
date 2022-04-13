@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from core import ReplayBuffer
+from env_wrapper import SubprocVecEnv
 
 logging.basicConfig(
     format=
@@ -160,15 +161,17 @@ class Agent():
         )
 
     def choose_action(self, observation):
-        if np.random.random() > self.epsilon:
-            state = T.tensor([pixel_to_float(observation)],
-                             dtype=T.float).to(self.q_eval.device)
-            q = self.q_eval.forward(state)
-            action = T.argmax(q).item()
-        else:
-            action = np.random.choice(self.action_space)
+        state = T.tensor(pixel_to_float(observation),
+                         dtype=T.float).to(self.q_eval.device)
+        q = self.q_eval.forward(state)
+        dtm_action = T.argmax(q, -1).cpu().numpy()
+        rnd_action = np.array([
+            np.random.choice(self.action_space)
+            for _ in range(observation.shape[0])
+        ])
+        mask = np.random.random(size=(observation.shape[0], )) > self.epsilon
 
-        return action
+        return mask * dtm_action + (1 - mask) * rnd_action
 
     def learn(self):
         if self.memory.cur_size < self.batch_size:
@@ -243,11 +246,12 @@ if __name__ == '__main__':
         logger.info(
             "wandb not installed. Code runs fine without logging to the web.")
 
-    device = T.device(
-        "cuda:0") if T.cuda.is_available() else T.device('cpu')
+    device = T.device("cuda:0") if T.cuda.is_available() else T.device('cpu')
 
-    train_env = make_env(args.env_name)
-    eval_env = make_env(args.env_name, eval_=True)
+    train_env = SubprocVecEnv(
+        [lambda: make_env(args.env_name) for _ in range(8)])
+    eval_env = SubprocVecEnv(
+        [lambda: make_env(args.env_name, eval_=True) for _ in range(2)])
 
     act_dim = train_env.action_space.n
 
@@ -269,25 +273,24 @@ if __name__ == '__main__':
     scores = []
 
     n_env_steps = i = 0
+    observation = train_env.reset()
     while n_env_steps < total_env_steps:
-        done = False
-        observation = train_env.reset()
+        action = agent.choose_action(observation)
+        observation_, reward, done, info = train_env.step(action)
 
-        while not done:
-            action = agent.choose_action(observation)
-            observation_, reward, done, info = train_env.step(action)
+        agent.memory.put_batch(observation, action, observation_, reward, done)
+        agent.learn()
 
-            agent.memory.put(observation, action, observation_, reward, done)
-            agent.learn()
+        observation = observation_
 
-            observation = observation_
-
-        i += 1
-        scores.append(info['episode']['r'])
-        avg_score = np.mean(scores[max(0, i - 100):(i + 1)])
-        print('episode: ', i, 'score %.1f ' % info['episode']['r'],
-              ' average score %.1f' % avg_score,
-              'epsilon %.2f' % agent.epsilon)
+        for d, inf in zip(done, info):
+            if d:
+                i += 1
+                scores.append(inf['episode']['r'])
+                avg_score = np.mean(scores[max(0, i - 100):(i + 1)])
+                print('episode: ', i, 'score %.1f ' % inf['episode']['r'],
+                      ' average score %.1f' % avg_score,
+                      'epsilon %.2f' % agent.epsilon)
 
     x = [i + 1 for i in range(num_games)]
 
