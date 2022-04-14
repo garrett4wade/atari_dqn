@@ -9,12 +9,8 @@ import torch.nn.functional as F
 class ReplayBuffer:
 
     def __init__(self, max_size, obs_shape):
-        if len(obs_shape) > 1:
-            self.state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
-            self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
-        else:
-            self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
-            self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
+        self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
+        self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
         self.action = np.zeros(max_size, dtype=np.int64)
         self.reward = np.zeros(max_size, dtype=np.float32)
         self.done = np.zeros(max_size, dtype=bool)
@@ -93,10 +89,11 @@ class AtariDQN(nn.Module):
 
         self.device = torch.device(
             "cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        self.to(self.device)
 
     def forward(self, x):
-        assert (x >= 0).all() and (x <= 1).all()
-        assert x.dtype == torch.float32
+        # assert (x >= 0).all() and (x <= 1).all()
+        # assert x.dtype == torch.float32
         act_fn = F.relu if not self.linear else lambda x: x
         x = act_fn(self.conv1(x))
         x = act_fn(self.conv2(x))
@@ -124,7 +121,9 @@ class DQN(nn.Module):
         else:
             self.Q = nn.Linear(hidden_dim, act_dim)
 
-        self.device = T.device("cpu")
+        self.device = torch.device(
+            "cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        self.to(self.device)
 
     def forward(self, state):
         act_fn = (lambda x: x) if self.linear else F.relu

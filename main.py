@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from core import ReplayBuffer, AtariDQN, DQN
-from env_wrapper import SubprocVecEnv
+from env_wrapper import SubprocVecEnv, wrap_deepmind
 
 logging.basicConfig(
     format=
@@ -30,31 +30,13 @@ except ModuleNotFoundError:
         "wandb not installed. Code runs fine without logging to the web.")
 
 
-def pixel_to_float(x):
-    if x.dtype == np.uint8 and len(x.shape) > 1:
-        return np.array(x, dtype=np.float32) / 255
-    else:
-        return x
-
 
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
     env = gym.wrappers.RecordEpisodeStatistics(env)
     if "NoFrameskip" in env_name:
-        env = gym.wrappers.AtariPreprocessing(
-            env,
-            noop_max=30,
-            frame_skip=4,
-            screen_size=84,
-            scale_obs=False,
-            terminal_on_life_loss=True,
-        )
-        env = gym.wrappers.FrameStack(env, 4)
-        if eval_:
-            # env = gym.wrappers.RecordVideo(env, './results')
-            pass
-        else:
-            env = gym.wrappers.TransformReward(env, lambda x: np.sign(x))
+        env = wrap_deepmind(env, frame_stack=True, scale=True)
+        env = gym.wrappers.TransformObservation(env, lambda x: np.transpose(x, (2, 0, 1)))
     return env
 
 
@@ -94,10 +76,9 @@ class Agent():
                  double,
                  linear,
                  dueling,
-                 eps_min=0.01,
-                 eps_dec=5e-7,
-                 replace=1000,
-                 chkpt_dir='tmp/dueling_ddqn'):
+                 eps_min,
+                 eps_dec,
+                 replace,):
         self.gamma = gamma
         self.epsilon = epsilon
         self.lr = lr
@@ -107,7 +88,6 @@ class Agent():
         self.eps_min = eps_min
         self.eps_dec = eps_dec
         self.replace_target_cnt = replace
-        self.chkpt_dir = chkpt_dir
         self.action_space = [i for i in range(self.n_actions)]
         self.learn_step_counter = 0
 
@@ -146,7 +126,7 @@ class Agent():
             )
 
     def choose_action(self, observation):
-        state = T.tensor(pixel_to_float(observation),
+        state = T.tensor(observation,
                          dtype=T.float).to(self.q_eval.device)
         q = self.q_eval.forward(state)
         dtm_action = T.argmax(q, -1).cpu().numpy()
@@ -170,11 +150,11 @@ class Agent():
         state, action, new_state, reward, done = \
                                 self.memory.get(self.batch_size)
 
-        states = T.tensor(pixel_to_float(state)).to(self.q_eval.device)
+        states = T.tensor(state).to(self.q_eval.device)
         rewards = T.tensor(reward).to(self.q_eval.device)
         dones = T.tensor(done).to(self.q_eval.device)
         actions = T.tensor(action).to(self.q_eval.device)
-        states_ = T.tensor(pixel_to_float(new_state)).to(self.q_eval.device)
+        states_ = T.tensor(new_state).to(self.q_eval.device)
 
         indices = np.arange(self.batch_size)
 
@@ -236,30 +216,30 @@ if __name__ == '__main__':
     device = T.device("cuda:0") if T.cuda.is_available() else T.device('cpu')
 
     train_env = SubprocVecEnv(
-        [lambda: make_env(args.env_name) for _ in range(8)])
+        [lambda: make_env(args.env_name) for _ in range(64)])
     eval_env = SubprocVecEnv(
-        [lambda: make_env(args.env_name, eval_=True) for _ in range(2)])
+        [lambda: make_env(args.env_name, eval_=True) for _ in range(16)])
 
     act_dim = train_env.action_space.n
 
     total_env_steps = int(5e6)
-    eval_interval = int(1e3)
-    log_interval = int(1e3)
-    save_interval = int(5e4)
+    eval_interval = int(2000)
+    log_interval = int(100)
+    save_interval = int(1e4)
 
     agent = Agent(gamma=0.99,
                   epsilon=1.0,
-                  lr=5e-4,
-                  input_dims=train_env.observation_space.shape,
+                  lr=1e-4,
+                  input_dims=train_env.observation_space.shape if "NoFrameskip" not in args.env_name else (4, 84, 84),
                   n_actions=train_env.action_space.n,
-                  mem_size=int(1e5),
+                  mem_size=int(1e6),
                   dueling=args.dueling,
                   linear=args.linear,
                   double=args.double,
-                  eps_min=0.01,
-                  batch_size=64,
-                  eps_dec=1e-3,
-                  replace=100)
+                  eps_min=0.05,
+                  batch_size=32,
+                  eps_dec=1e-4,
+                  replace=10000)
 
     scores = deque(maxlen=100)
     losses = deque(maxlen=1000)
