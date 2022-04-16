@@ -85,7 +85,8 @@ class AtariDQN(nn.Module):
         self.linear = linear
         self.dueling = dueling
         if dueling:
-            self.fc_v = nn.Linear(512, 1)
+            self.fc_v1 = nn.Linear(in_features=7 * 7 * 64, out_features=512)
+            self.fc_v2 = nn.Linear(in_features=512, out_features=1)
 
         self.device = torch.device(
             "cuda:0") if torch.cuda.is_available() else torch.device("cpu")
@@ -99,11 +100,10 @@ class AtariDQN(nn.Module):
         x = act_fn(self.conv2(x))
         x = act_fn(self.conv3(x))
         x = x.view(x.size(0), -1)
-        x = act_fn(self.fc1(x))
         if not self.dueling:
-            return self.fc2(x)
+            return self.fc2(act_fn(self.fc1(x)))
         else:
-            v, adv = self.fc_v(x), self.fc2(x)
+            v, adv = self.fc_v2(act_fn(self.fc_v1(x))), self.fc2(act_fn(self.fc1(x)))
             return v + adv - adv.mean(-1, keepdim=True)
 
 
