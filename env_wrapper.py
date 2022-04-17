@@ -187,7 +187,7 @@ class SubprocVecEnv(ShareVecEnv):
         """
         self.waiting = False
         self.closed = False
-        nenvs = len(env_fns)
+        self.nenvs = nenvs = len(env_fns)
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
         self.ps = [
             Process(target=worker,

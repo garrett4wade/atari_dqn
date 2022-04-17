@@ -33,9 +33,8 @@ except ModuleNotFoundError:
 
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
     if "NoFrameskip" in env_name:
-        env = wrap_deepmind(env, frame_stack=True, scale=True)
+        env = wrap_deepmind(env, episode_life=(not eval_), clip_rewards=(not eval_), frame_stack=True, scale=True)
         env = gym.wrappers.TransformObservation(env, lambda x: np.transpose(x, (2, 0, 1)))
     return env
 
@@ -47,19 +46,30 @@ def eval_dqn(
         device=T.device("cuda:0")
     if T.cuda.is_available() else T.device("cpu"),
 ):
-    ep_cnt = total_ep_step = total_ep_ret = 0
+    ep_cnt = 0
+    ep_steps = []
+    ep_rets = []
     obs = eval_env.reset()
+    running_rewards = np.zeros(eval_env.nenvs, dtype=np.float32)
+    running_ep_len = np.zeros(eval_env.nenvs, dtype=np.float32)
     while ep_cnt < n_episodes:
-        action = agent.choose_action(obs)
-        obs, _, done, info = eval_env.step(action)
-        for d, inf in zip(done, info):
+        action = agent.choose_action(obs, eps=0.05)
+        obs, r, done, info = eval_env.step(action)
+        running_rewards += r
+        running_ep_len += 1
+        for j, d in enumerate(done):
             if d:
                 ep_cnt += 1
-                total_ep_ret += inf['episode']['r']
-                total_ep_step += inf['episode']['l']
+                ep_rets.append(running_rewards[j])
+                ep_steps.append(running_ep_len[j])
+                running_rewards[j] = running_ep_len[j] = 0
+                if ep_cnt >= n_episodes:
+                    break
     return dict(
-        eval_episode_return=total_ep_ret / n_episodes,
-        eval_episode_length=total_ep_step / n_episodes,
+        eval_ret=np.mean(ep_rets),
+        eval_len=np.mean(ep_steps),
+        eval_ret_std=np.std(ep_rets),
+        eval_len_std=np.std(ep_steps),
     )
 
 
@@ -109,7 +119,7 @@ class Agent():
                 dueling=dueling,
             )
 
-        self.optimizer = T.optim.Adam(self.q_eval.parameters(), lr=lr)
+        self.optimizer = T.optim.RMSprop(self.q_eval.parameters(), lr=lr, alpha=0.95, eps=0.01)
 
         if len(self.input_dims) == 1:
             self.q_next = DQN(
@@ -125,17 +135,21 @@ class Agent():
                 dueling=dueling,
             )
 
-    def choose_action(self, observation):
-        state = T.tensor(observation,
-                         dtype=T.float).to(self.q_eval.device)
-        q = self.q_eval.forward(state)
-        dtm_action = T.argmax(q, -1).cpu().numpy()
+    def choose_action(self, observation, force_random=False, eps=None):
         rnd_action = np.array([
             np.random.choice(self.action_space)
             for _ in range(observation.shape[0])
         ])
-        mask = np.random.random(size=(observation.shape[0], )) > self.epsilon
+        if force_random:
+            return rnd_action
 
+        epsilon = self.epsilon if eps is None else eps
+        state = T.tensor(observation,
+                         dtype=T.float).to(self.q_eval.device)
+        q = self.q_eval.forward(state)
+        dtm_action = T.argmax(q, -1).cpu().numpy()
+        assert dtm_action.shape == (observation.shape[0], ), dtm_action.shape
+        mask = np.random.random(size=(observation.shape[0], )) > epsilon
         return mask * dtm_action + (1 - mask) * rnd_action
 
     def learn(self):
@@ -152,6 +166,7 @@ class Agent():
 
         states = T.tensor(state).to(self.q_eval.device)
         rewards = T.tensor(reward).to(self.q_eval.device)
+        assert (rewards <= 1).all() and (rewards >= -1).all()
         dones = T.tensor(done).to(self.q_eval.device)
         actions = T.tensor(action).to(self.q_eval.device)
         states_ = T.tensor(new_state).to(self.q_eval.device)
@@ -172,32 +187,30 @@ class Agent():
             q_next = q_next.max(-1).values
         q_target = rewards + self.gamma * q_next
 
-        loss = ((q_target - q_pred)**2).mean()
-        loss.backward()
+        clipped_error = -1.0 * (q_target - q_pred).clamp(-1, 1)
+
+        # backwards pass
+        self.optimizer.zero_grad()
+        q_pred.backward(clipped_error.data)
         self.optimizer.step()
         self.learn_step_counter += 1
-
+    
+    def decay_epsilon(self):
         self.epsilon = max(self.eps_min, self.epsilon - self.eps_dec)
-        return loss.item()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", type=str, default="CartPole-v1")
     parser.add_argument("--group", type=str)
+    parser.add_argument("--trial", type=str)
     parser.add_argument("--dueling", action='store_true')
     parser.add_argument("--double", action="store_true")
     parser.add_argument("--linear", action='store_true')
     parser.add_argument("--wandb", action='store_true')
-    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    T.backends.cudnn.deterministic = True
     T.backends.cudnn.benchmark = True
-
-    np.random.seed(args.seed)
-    T.manual_seed(args.seed)
-    T.cuda.manual_seed_all(args.seed)
 
     try:
         import wandb
@@ -205,7 +218,7 @@ if __name__ == '__main__':
             wandb_run = wandb.init(project='atari_dqn',
                                    config=vars(args),
                                    group=args.group,
-                                   name=f"seed{args.seed}")
+                                   name=args.trial)
         else:
             wandb_run = None
     except ModuleNotFoundError:
@@ -215,55 +228,63 @@ if __name__ == '__main__':
 
     device = T.device("cuda:0") if T.cuda.is_available() else T.device('cpu')
 
-    train_env = SubprocVecEnv(
-        [lambda: make_env(args.env_name) for _ in range(64)])
+    train_env = make_env(args.env_name)
     eval_env = SubprocVecEnv(
-        [lambda: make_env(args.env_name, eval_=True) for _ in range(16)])
+        [lambda: make_env(args.env_name, eval_=True) for _ in range(32)])
 
     act_dim = train_env.action_space.n
 
-    total_env_steps = int(5e6)
-    eval_interval = int(2000)
-    log_interval = int(100)
-    save_interval = int(1e4)
+    total_env_steps = int(200e6)
+    eval_interval = int(1e5)
+    log_interval = int(1000)
+    save_interval = eval_interval * 2
+
+    learning_start = 5e4
+    learning_interval = 4
 
     agent = Agent(gamma=0.99,
                   epsilon=1.0,
-                  lr=1e-4,
+                  lr=2.5e-4,
                   input_dims=train_env.observation_space.shape if "NoFrameskip" not in args.env_name else (4, 84, 84),
                   n_actions=train_env.action_space.n,
                   mem_size=int(1e6),
                   dueling=args.dueling,
                   linear=args.linear,
                   double=args.double,
-                  eps_min=0.05,
+                  eps_min=0.1,
                   batch_size=32,
-                  eps_dec=1e-4,
+                  eps_dec=9e-7,
                   replace=10000)
 
     scores = deque(maxlen=100)
-    losses = deque(maxlen=1000)
+
+    running_rewards = 0
+    running_ep_len = 0
 
     n_env_steps = ep_cnt = 0
     observation = train_env.reset()
     while n_env_steps < total_env_steps:
-        action = agent.choose_action(observation)
-        observation_, reward, done, info = train_env.step(action)
+        action = agent.choose_action(observation[None, :], force_random=(n_env_steps <= learning_start))
+        observation_, reward, done, info = train_env.step(action.item())
 
-        agent.memory.put_batch(observation, action, observation_, reward, done)
-        loss = agent.learn()
+        running_rewards += reward
+        running_ep_len += 1
 
-        if loss is not None:
-            losses.append(loss)
+        agent.memory.put(observation, action, observation_, reward, done)
+
+        if done:
+            observation_ = train_env.reset()
+            ep_cnt += 1
+            scores.append(running_rewards)
+            running_rewards = running_ep_len = 0
 
         observation = observation_
 
-        for d, inf in zip(done, info):
-            if d:
-                ep_cnt += 1
-                scores.append(inf['episode']['r'])
+        if n_env_steps >= learning_start and n_env_steps % learning_interval == 0:
+            agent.learn()
 
         n_env_steps += 1
+        agent.decay_epsilon()
 
         if n_env_steps % log_interval == 0:
             avg_score = np.mean(scores)
@@ -276,15 +297,14 @@ if __name__ == '__main__':
             if wandb_run is not None and args.wandb:
                 wandb.log(
                     dict(train_episode_return=avg_score,
-                         eps=agent.epsilon,
-                         loss=np.mean(losses)), n_env_steps)
+                         eps=agent.epsilon,), n_env_steps)
 
         if n_env_steps % eval_interval == 0:
             eval_info = eval_dqn(agent, eval_env)
             logger.info(
-                f"Evaluation Episode Return {eval_info['eval_episode_return']}"
-                f", Episode Length {eval_info['eval_episode_length']}.")
-            if wandb_run is not None and args.wandb:
+                "Evaluation Episode Return {:.2f} (± {:.2f})".format(eval_info['eval_ret'], eval_info['eval_ret_std']) + 
+                f", Episode Length {eval_info['eval_len']}.")
+            if n_env_steps >= learning_start and wandb_run is not None and args.wandb:
                 wandb.log(eval_info, n_env_steps)
 
         if n_env_steps % save_interval == 0:
