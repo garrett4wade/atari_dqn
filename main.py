@@ -34,7 +34,7 @@ except ModuleNotFoundError:
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
     if "NoFrameskip" in env_name:
-        env = wrap_deepmind(env, episode_life=(not eval_), clip_rewards=(not eval_), frame_stack=True, scale=True)
+        env = wrap_deepmind(env, episode_life=(not eval_), clip_rewards=(not eval_), frame_stack=True, scale=False)
         env = gym.wrappers.TransformObservation(env, lambda x: np.transpose(x, (2, 0, 1)))
     return env
 
@@ -148,9 +148,8 @@ class Agent():
             return rnd_action
 
         epsilon = self.epsilon if eps is None else eps
-        state = T.tensor(observation,
-                         dtype=T.float).to(self.q_eval.device)
-        q = self.q_eval.forward(state)
+        state = T.from_numpy(observation).to(self.q_eval.device) / 255.0
+        q = self.q_eval(state)
         dtm_action = T.argmax(q, -1).cpu().numpy()
         assert dtm_action.shape == (observation.shape[0], ), dtm_action.shape
         mask = np.random.random(size=(observation.shape[0], )) > epsilon
@@ -167,8 +166,8 @@ class Agent():
 
         state, actions, new_state, rewards, dones = self.memory.get(self.batch_size)
 
-        states = T.from_numpy(state).to(self.q_eval.device)
-        states_ = T.from_numpy(new_state).to(self.q_eval.device)
+        states = T.from_numpy(state).to(self.q_eval.device) / 255.0
+        states_ = T.from_numpy(new_state).to(self.q_eval.device) / 255.0
 
         indices = np.arange(self.batch_size)
 
@@ -233,8 +232,8 @@ if __name__ == '__main__':
     act_dim = train_env.action_space.n
 
     total_env_steps = int(200e6)
-    eval_interval = int(1e5)
-    log_interval = int(1000)
+    eval_interval = int(2e5)
+    log_interval = int(2000)
     save_interval = eval_interval * 2
 
     learning_start = 5e4
@@ -285,7 +284,7 @@ if __name__ == '__main__':
         n_env_steps += 1
         agent.decay_epsilon()
 
-        if n_env_steps % log_interval == 0:
+        if n_env_steps % log_interval == 0 and len(scores) > 0:
             avg_score = np.mean(scores)
             logger.info(''.join([
                 f'Environment Steps {n_env_steps}/{total_env_steps}',

@@ -9,8 +9,8 @@ import torch.nn.functional as F
 class ReplayBuffer:
 
     def __init__(self, max_size, obs_shape, device):
-        self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
-        self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
+        self.state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
+        self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.uint8)
         self.action = torch.zeros(max_size, dtype=torch.int64, device=device)
         self.reward = torch.zeros(max_size, dtype=torch.float32, device=device)
         self.done = torch.zeros(max_size, dtype=torch.bool, device=device)
@@ -101,7 +101,7 @@ class AtariDQN(nn.Module):
         x = act_fn(self.conv1(x))
         x = act_fn(self.conv2(x))
         x = act_fn(self.conv3(x))
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         if not self.dueling:
             return self.fc2(act_fn(self.fc1(x)))
         else:
