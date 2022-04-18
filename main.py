@@ -43,8 +43,6 @@ def eval_dqn(
         agent,
         eval_env,
         n_episodes=20,
-        device=T.device("cuda:0")
-    if T.cuda.is_available() else T.device("cpu"),
 ):
     ep_cnt = 0
     ep_steps = []
@@ -88,7 +86,8 @@ class Agent():
                  dueling,
                  eps_min,
                  eps_dec,
-                 replace,):
+                 replace,
+                 device,):
         self.gamma = gamma
         self.epsilon = epsilon
         self.lr = lr
@@ -103,7 +102,8 @@ class Agent():
 
         self.double = double
 
-        self.memory = ReplayBuffer(mem_size, input_dims)
+        self.memory = ReplayBuffer(mem_size, input_dims, device=device)
+        self.device = device
 
         if len(self.input_dims) == 1:
             self.q_eval = DQN(
@@ -111,12 +111,14 @@ class Agent():
                 self.n_actions,
                 dueling=dueling,
                 linear=linear,
+                device=self.device,
             )
         else:
             self.q_eval = AtariDQN(
                 self.n_actions,
                 linear=linear,
                 dueling=dueling,
+                device=self.device,
             )
 
         self.optimizer = T.optim.RMSprop(self.q_eval.parameters(), lr=lr, alpha=0.95, eps=0.01)
@@ -127,12 +129,14 @@ class Agent():
                 self.n_actions,
                 dueling=dueling,
                 linear=linear,
+                device=self.device,
             )
         else:
             self.q_next = AtariDQN(
                 self.n_actions,
                 linear=linear,
                 dueling=dueling,
+                device=self.device,
             )
 
     def choose_action(self, observation, force_random=False, eps=None):
@@ -161,27 +165,20 @@ class Agent():
         if self.learn_step_counter % self.replace_target_cnt == 0:
             self.q_next.load_state_dict(self.q_eval.state_dict())
 
-        state, action, new_state, reward, done = \
-                                self.memory.get(self.batch_size)
+        state, actions, new_state, rewards, dones = self.memory.get(self.batch_size)
 
-        states = T.tensor(state).to(self.q_eval.device)
-        rewards = T.tensor(reward).to(self.q_eval.device)
-        assert (rewards <= 1).all() and (rewards >= -1).all()
-        dones = T.tensor(done).to(self.q_eval.device)
-        actions = T.tensor(action).to(self.q_eval.device)
-        states_ = T.tensor(new_state).to(self.q_eval.device)
+        states = T.from_numpy(state).to(self.q_eval.device)
+        states_ = T.from_numpy(new_state).to(self.q_eval.device)
 
         indices = np.arange(self.batch_size)
 
         q_pred = self.q_eval.forward(states)[indices, actions]
         q_next = self.q_next.forward(states_)
 
-        q_eval = self.q_eval.forward(states_)
-
-        max_actions = T.argmax(q_eval, dim=1)
-
         q_next[dones] = 0.0
         if self.double:
+            q_eval = self.q_eval.forward(states_)
+            max_actions = T.argmax(q_eval, dim=1)
             q_next = q_next[indices, max_actions]
         else:
             q_next = q_next.max(-1).values
@@ -208,6 +205,7 @@ if __name__ == '__main__':
     parser.add_argument("--double", action="store_true")
     parser.add_argument("--linear", action='store_true')
     parser.add_argument("--wandb", action='store_true')
+    parser.add_argument("--device", type=int, default=0)
     args = parser.parse_args()
 
     T.backends.cudnn.benchmark = True
@@ -226,7 +224,7 @@ if __name__ == '__main__':
         logger.info(
             "wandb not installed. Code runs fine without logging to the web.")
 
-    device = T.device("cuda:0") if T.cuda.is_available() else T.device('cpu')
+    device = T.device(args.device) if T.cuda.is_available() else T.device('cpu')
 
     train_env = make_env(args.env_name)
     eval_env = SubprocVecEnv(
@@ -254,7 +252,8 @@ if __name__ == '__main__':
                   eps_min=0.1,
                   batch_size=32,
                   eps_dec=9e-7,
-                  replace=10000)
+                  replace=10000,
+                  device=device,)
 
     scores = deque(maxlen=100)
 

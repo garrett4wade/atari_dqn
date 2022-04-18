@@ -8,18 +8,20 @@ import torch.nn.functional as F
 
 class ReplayBuffer:
 
-    def __init__(self, max_size, obs_shape):
+    def __init__(self, max_size, obs_shape, device):
         self.state = np.zeros((max_size, *obs_shape), dtype=np.float32)
         self.nex_state = np.zeros((max_size, *obs_shape), dtype=np.float32)
-        self.action = np.zeros(max_size, dtype=np.int64)
-        self.reward = np.zeros(max_size, dtype=np.float32)
-        self.done = np.zeros(max_size, dtype=bool)
+        self.action = torch.zeros(max_size, dtype=torch.int64, device=device)
+        self.reward = torch.zeros(max_size, dtype=torch.float32, device=device)
+        self.done = torch.zeros(max_size, dtype=torch.bool, device=device)
 
         self.max_size = max_size
         self.cur_size = 0
         self.ptr = 0
+        self.device = device
 
     def put_batch(self, s, a, n_s, r, d):
+        a = torch.from_numpy(a).to(self.device)
         bs = len(r)
         ptr = self.ptr
         if self.ptr + bs > self.max_size:
@@ -45,6 +47,7 @@ class ReplayBuffer:
         self.cur_size = min(self.cur_size + bs, self.max_size)
 
     def put(self, s, a, n_s, r, d):
+        a = torch.from_numpy(a).to(self.device)
         self.state[self.ptr] = s
         self.action[self.ptr] = a
         self.nex_state[self.ptr] = n_s
@@ -64,7 +67,7 @@ class ReplayBuffer:
 
 class AtariDQN(nn.Module):
 
-    def __init__(self, num_actions, linear, dueling):
+    def __init__(self, num_actions, linear, dueling, device):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels=4,
                                out_channels=32,
@@ -88,8 +91,7 @@ class AtariDQN(nn.Module):
             self.fc_v1 = nn.Linear(in_features=7 * 7 * 64, out_features=512)
             self.fc_v2 = nn.Linear(in_features=512, out_features=1)
 
-        self.device = torch.device(
-            "cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        self.device = device
         self.to(self.device)
 
     def forward(self, x):
