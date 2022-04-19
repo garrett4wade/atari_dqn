@@ -30,19 +30,23 @@ except ModuleNotFoundError:
         "wandb not installed. Code runs fine without logging to the web.")
 
 
-
 def make_env(env_name, eval_=False):
     env = gym.make(env_name)
     if "NoFrameskip" in env_name:
-        env = wrap_deepmind(env, episode_life=(not eval_), clip_rewards=(not eval_), frame_stack=True, scale=False)
-        env = gym.wrappers.TransformObservation(env, lambda x: np.transpose(x, (2, 0, 1)))
+        env = wrap_deepmind(env,
+                            episode_life=(not eval_),
+                            clip_rewards=(not eval_),
+                            frame_stack=True,
+                            scale=False)
+        env = gym.wrappers.TransformObservation(
+            env, lambda x: np.transpose(x, (2, 0, 1)))
     return env
 
 
 def eval_dqn(
-        agent,
-        eval_env,
-        n_episodes=20,
+    agent,
+    eval_env,
+    n_episodes=20,
 ):
     ep_cnt = 0
     ep_steps = []
@@ -72,22 +76,23 @@ def eval_dqn(
 
 
 class Agent():
-
-    def __init__(self,
-                 gamma,
-                 epsilon,
-                 lr,
-                 n_actions,
-                 input_dims,
-                 mem_size,
-                 batch_size,
-                 double,
-                 linear,
-                 dueling,
-                 eps_min,
-                 eps_dec,
-                 replace,
-                 device,):
+    def __init__(
+        self,
+        gamma,
+        epsilon,
+        lr,
+        n_actions,
+        input_dims,
+        mem_size,
+        batch_size,
+        double,
+        linear,
+        dueling,
+        eps_min,
+        eps_dec,
+        replace,
+        device,
+    ):
         self.gamma = gamma
         self.epsilon = epsilon
         self.lr = lr
@@ -121,7 +126,10 @@ class Agent():
                 device=self.device,
             )
 
-        self.optimizer = T.optim.RMSprop(self.q_eval.parameters(), lr=lr, alpha=0.95, eps=0.01)
+        self.optimizer = T.optim.RMSprop(self.q_eval.parameters(),
+                                         lr=lr,
+                                         alpha=0.95,
+                                         eps=0.01)
 
         if len(self.input_dims) == 1:
             self.q_next = DQN(
@@ -164,7 +172,8 @@ class Agent():
         if self.learn_step_counter % self.replace_target_cnt == 0:
             self.q_next.load_state_dict(self.q_eval.state_dict())
 
-        state, actions, new_state, rewards, dones = self.memory.get(self.batch_size)
+        state, actions, new_state, rewards, dones = self.memory.get(
+            self.batch_size)
 
         states = T.from_numpy(state).to(self.q_eval.device) / 255.0
         states_ = T.from_numpy(new_state).to(self.q_eval.device) / 255.0
@@ -190,7 +199,7 @@ class Agent():
         q_pred.backward(clipped_error.data)
         self.optimizer.step()
         self.learn_step_counter += 1
-    
+
     def decay_epsilon(self):
         self.epsilon = max(self.eps_min, self.epsilon - self.eps_dec)
 
@@ -223,7 +232,8 @@ if __name__ == '__main__':
         logger.info(
             "wandb not installed. Code runs fine without logging to the web.")
 
-    device = T.device(args.device) if T.cuda.is_available() else T.device('cpu')
+    device = T.device(
+        args.device) if T.cuda.is_available() else T.device('cpu')
 
     train_env = make_env(args.env_name)
     # eval_env = SubprocVecEnv(
@@ -239,20 +249,23 @@ if __name__ == '__main__':
     learning_start = 5e4
     learning_interval = 4
 
-    agent = Agent(gamma=0.99,
-                  epsilon=1.0,
-                  lr=2.5e-4,
-                  input_dims=train_env.observation_space.shape if "NoFrameskip" not in args.env_name else (4, 84, 84),
-                  n_actions=train_env.action_space.n,
-                  mem_size=int(1e6),
-                  dueling=args.dueling,
-                  linear=args.linear,
-                  double=args.double,
-                  eps_min=0.1,
-                  batch_size=32,
-                  eps_dec=9e-7,
-                  replace=10000,
-                  device=device,)
+    agent = Agent(
+        gamma=0.99,
+        epsilon=1.0,
+        lr=2.5e-4,
+        input_dims=train_env.observation_space.shape
+        if "NoFrameskip" not in args.env_name else (4, 84, 84),
+        n_actions=train_env.action_space.n,
+        mem_size=int(1e6),
+        dueling=args.dueling,
+        linear=args.linear,
+        double=args.double,
+        eps_min=0.1,
+        batch_size=32,
+        eps_dec=9e-7,
+        replace=10000,
+        device=device,
+    )
 
     scores = deque(maxlen=100)
     ep_lens = deque(maxlen=100)
@@ -263,7 +276,8 @@ if __name__ == '__main__':
     n_env_steps = ep_cnt = 0
     observation = train_env.reset()
     while n_env_steps < total_env_steps:
-        action = agent.choose_action(observation[None, :], force_random=(n_env_steps <= learning_start))
+        action = agent.choose_action(
+            observation[None, :], force_random=(n_env_steps <= learning_start))
         observation_, reward, done, info = train_env.step(action.item())
 
         running_rewards += reward
@@ -297,14 +311,16 @@ if __name__ == '__main__':
             ]))
             if wandb_run is not None and args.wandb:
                 wandb.log(
-                    dict(train_episode_return=avg_score,
-                         train_episode_length=avg_ep_len,
-                         eps=agent.epsilon,), n_env_steps)
+                    dict(
+                        train_episode_return=avg_score,
+                        train_episode_length=avg_ep_len,
+                        eps=agent.epsilon,
+                    ), n_env_steps)
 
         # if n_env_steps % eval_interval == 0:
         #     eval_info = eval_dqn(agent, eval_env)
         #     logger.info(
-        #         "Evaluation Episode Return {:.2f} (± {:.2f})".format(eval_info['eval_ret'], eval_info['eval_ret_std']) + 
+        #         "Evaluation Episode Return {:.2f} (± {:.2f})".format(eval_info['eval_ret'], eval_info['eval_ret_std']) +
         #         f", Episode Length {eval_info['eval_len']}.")
         #     if n_env_steps >= learning_start and wandb_run is not None and args.wandb:
         #         wandb.log(eval_info, n_env_steps)

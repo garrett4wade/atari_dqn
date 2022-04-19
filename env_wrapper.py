@@ -10,6 +10,7 @@ from collections import deque
 import gym
 from gym import spaces
 import os
+
 os.environ.setdefault('PATH', '')
 cv2.ocl.setUseOpenCL(False)
 
@@ -18,7 +19,6 @@ class CloudpickleWrapper(object):
     """
     Uses cloudpickle to serialize contents (otherwise multiprocessing tries to use pickle)
     """
-
     def __init__(self, x):
         self.x = x
 
@@ -180,7 +180,6 @@ def worker(remote, parent_remote, env_fn_wrapper):
 
 
 class SubprocVecEnv(ShareVecEnv):
-
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -202,9 +201,9 @@ class SubprocVecEnv(ShareVecEnv):
             remote.close()
 
         self.remotes[0].send(('get_spaces', None))
-        observation_space, action_space = self.remotes[
-            0].recv()
-        ShareVecEnv.__init__(self, len(env_fns), observation_space, action_space)
+        observation_space, action_space = self.remotes[0].recv()
+        ShareVecEnv.__init__(self, len(env_fns), observation_space,
+                             action_space)
 
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
@@ -247,6 +246,7 @@ class SubprocVecEnv(ShareVecEnv):
             frame = [remote.recv() for remote in self.remotes]
             return np.stack(frame)
 
+
 class TimeLimit(gym.Wrapper):
     def __init__(self, env, max_episode_steps=None):
         super(TimeLimit, self).__init__(env)
@@ -283,7 +283,7 @@ class NoopResetEnv(gym.Wrapper):
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
+            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1)  #pylint: disable=E1101
         assert noops > 0
         obs = None
         for _ in range(noops):
@@ -294,6 +294,7 @@ class NoopResetEnv(gym.Wrapper):
 
     def step(self, ac):
         return self.env.step(ac)
+
 
 class FireResetEnv(gym.Wrapper):
     def __init__(self, env):
@@ -315,6 +316,7 @@ class FireResetEnv(gym.Wrapper):
     def step(self, ac):
         return self.env.step(ac)
 
+
 class EpisodicLifeEnv(gym.Wrapper):
     def __init__(self, env):
         """Make end-of-life == end-of-episode, but only reset on true game over.
@@ -322,7 +324,7 @@ class EpisodicLifeEnv(gym.Wrapper):
         """
         gym.Wrapper.__init__(self, env)
         self.lives = 0
-        self.was_real_done  = True
+        self.was_real_done = True
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -351,13 +353,15 @@ class EpisodicLifeEnv(gym.Wrapper):
         self.lives = self.env.unwrapped.ale.lives()
         return obs
 
+
 class MaxAndSkipEnv(gym.Wrapper):
     def __init__(self, env, skip=4):
         """Return only every `skip`-th frame"""
         gym.Wrapper.__init__(self, env)
         # most recent raw observations (for max pooling across time steps)
-        self._obs_buffer = np.zeros((2,)+env.observation_space.shape, dtype=np.uint8)
-        self._skip       = skip
+        self._obs_buffer = np.zeros((2, ) + env.observation_space.shape,
+                                    dtype=np.uint8)
+        self._skip = skip
 
     def step(self, action):
         """Repeat action, sum reward, and max over last observations."""
@@ -379,6 +383,7 @@ class MaxAndSkipEnv(gym.Wrapper):
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
 
+
 class ClipRewardEnv(gym.RewardWrapper):
     def __init__(self, env):
         gym.RewardWrapper.__init__(self, env)
@@ -389,7 +394,12 @@ class ClipRewardEnv(gym.RewardWrapper):
 
 
 class WarpFrame(gym.ObservationWrapper):
-    def __init__(self, env, width=84, height=84, grayscale=True, dict_space_key=None):
+    def __init__(self,
+                 env,
+                 width=84,
+                 height=84,
+                 grayscale=True,
+                 dict_space_key=None):
         """
         Warp frames to 84x84 as done in the Nature paper and later work.
         If the environment uses dictionary observations, `dict_space_key` can be specified which indicates which
@@ -417,7 +427,8 @@ class WarpFrame(gym.ObservationWrapper):
         else:
             original_space = self.observation_space.spaces[self._key]
             self.observation_space.spaces[self._key] = new_space
-        assert original_space.dtype == np.uint8 and len(original_space.shape) == 3
+        assert original_space.dtype == np.uint8 and len(
+            original_space.shape) == 3
 
     def observation(self, obs):
         if self._key is None:
@@ -427,9 +438,8 @@ class WarpFrame(gym.ObservationWrapper):
 
         if self._grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(
-            frame, (self._width, self._height), interpolation=cv2.INTER_AREA
-        )
+        frame = cv2.resize(frame, (self._width, self._height),
+                           interpolation=cv2.INTER_AREA)
         if self._grayscale:
             frame = np.expand_dims(frame, -1)
 
@@ -453,7 +463,10 @@ class FrameStack(gym.Wrapper):
         self.k = k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[:-1] + (shp[-1] * k,)), dtype=env.observation_space.dtype)
+        self.observation_space = spaces.Box(low=0,
+                                            high=255,
+                                            shape=(shp[:-1] + (shp[-1] * k, )),
+                                            dtype=env.observation_space.dtype)
 
     def reset(self):
         ob = self.env.reset()
@@ -470,15 +483,18 @@ class FrameStack(gym.Wrapper):
         assert len(self.frames) == self.k
         return LazyFrames(list(self.frames))
 
+
 class ScaledFloatFrame(gym.ObservationWrapper):
     def __init__(self, env):
         gym.ObservationWrapper.__init__(self, env)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=env.observation_space.shape, dtype=np.float32)
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=env.observation_space.shape, dtype=np.float32)
 
     def observation(self, observation):
         # careful! This undoes the memory optimization, use
         # with smaller replay buffers only.
         return np.array(observation).astype(np.float32) / 255.0
+
 
 class LazyFrames(object):
     def __init__(self, frames):
@@ -515,6 +531,7 @@ class LazyFrames(object):
     def frame(self, i):
         return self._force()[..., i]
 
+
 def make_atari(env_id, max_episode_steps=None):
     env = gym.make(env_id)
     assert 'NoFrameskip' in env.spec.id
@@ -524,7 +541,12 @@ def make_atari(env_id, max_episode_steps=None):
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
     return env
 
-def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, scale=False):
+
+def wrap_deepmind(env,
+                  episode_life=True,
+                  clip_rewards=True,
+                  frame_stack=False,
+                  scale=False):
     """Configure environment for DeepMind-style Atari.
     """
     if episode_life:
