@@ -183,7 +183,7 @@ class Agent():
             q_next = q_next.max(-1).values
         q_target = rewards + self.gamma * q_next
 
-        clipped_error = -1.0 * (q_target - q_pred).clamp(-1, 1)
+        clipped_error = -1.0 * (q_target.detach() - q_pred).clamp(-1, 1)
 
         # backwards pass
         self.optimizer.zero_grad()
@@ -226,8 +226,8 @@ if __name__ == '__main__':
     device = T.device(args.device) if T.cuda.is_available() else T.device('cpu')
 
     train_env = make_env(args.env_name)
-    eval_env = SubprocVecEnv(
-        [lambda: make_env(args.env_name, eval_=True) for _ in range(32)])
+    # eval_env = SubprocVecEnv(
+    #     [lambda: make_env(args.env_name, eval_=True) for _ in range(32)])
 
     act_dim = train_env.action_space.n
 
@@ -255,6 +255,7 @@ if __name__ == '__main__':
                   device=device,)
 
     scores = deque(maxlen=100)
+    ep_lens = deque(maxlen=100)
 
     running_rewards = 0
     running_ep_len = 0
@@ -274,6 +275,7 @@ if __name__ == '__main__':
             observation_ = train_env.reset()
             ep_cnt += 1
             scores.append(running_rewards)
+            ep_lens.append(running_ep_len)
             running_rewards = running_ep_len = 0
 
         observation = observation_
@@ -286,6 +288,7 @@ if __name__ == '__main__':
 
         if n_env_steps % log_interval == 0 and len(scores) > 0:
             avg_score = np.mean(scores)
+            avg_ep_len = np.mean(ep_lens)
             logger.info(''.join([
                 f'Environment Steps {n_env_steps}/{total_env_steps}',
                 f'\t Number of Episodes: {ep_cnt}',
@@ -295,15 +298,16 @@ if __name__ == '__main__':
             if wandb_run is not None and args.wandb:
                 wandb.log(
                     dict(train_episode_return=avg_score,
+                         train_episode_length=avg_ep_len,
                          eps=agent.epsilon,), n_env_steps)
 
-        if n_env_steps % eval_interval == 0:
-            eval_info = eval_dqn(agent, eval_env)
-            logger.info(
-                "Evaluation Episode Return {:.2f} (± {:.2f})".format(eval_info['eval_ret'], eval_info['eval_ret_std']) + 
-                f", Episode Length {eval_info['eval_len']}.")
-            if n_env_steps >= learning_start and wandb_run is not None and args.wandb:
-                wandb.log(eval_info, n_env_steps)
+        # if n_env_steps % eval_interval == 0:
+        #     eval_info = eval_dqn(agent, eval_env)
+        #     logger.info(
+        #         "Evaluation Episode Return {:.2f} (± {:.2f})".format(eval_info['eval_ret'], eval_info['eval_ret_std']) + 
+        #         f", Episode Length {eval_info['eval_len']}.")
+        #     if n_env_steps >= learning_start and wandb_run is not None and args.wandb:
+        #         wandb.log(eval_info, n_env_steps)
 
         if n_env_steps % save_interval == 0:
             fname = "dqn"
