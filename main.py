@@ -4,7 +4,7 @@ import gym
 import logging
 import os
 import numpy as np
-import torch as T
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -128,7 +128,7 @@ class Agent():
                 device=self.device,
             )
 
-        self.optimizer = T.optim.RMSprop(self.q_eval.parameters(),
+        self.optimizer = torch.optim.RMSprop(self.q_eval.parameters(),
                                          lr=lr,
                                          alpha=0.95,
                                          eps=0.01)
@@ -149,7 +149,7 @@ class Agent():
                 device=self.device,
             )
 
-    @T.no_grad()
+    @torch.no_grad()
     def choose_action(self, observation, force_random=False, eps=None):
         rnd_action = np.array([
             np.random.choice(self.action_space)
@@ -159,9 +159,9 @@ class Agent():
             return rnd_action
 
         epsilon = self.epsilon if eps is None else eps
-        state = T.from_numpy(observation).to(self.q_eval.device) / 255.0
+        state = torch.from_numpy(observation).to(self.q_eval.device) / 255.0
         q = self.q_eval(state)
-        dtm_action = T.argmax(q, -1).cpu().numpy()
+        dtm_action = torch.argmax(q, -1).cpu().numpy()
         assert dtm_action.shape == (observation.shape[0], ), dtm_action.shape
         mask = np.random.random(size=(observation.shape[0], )) > epsilon
         return mask * dtm_action + (1 - mask) * rnd_action
@@ -178,8 +178,8 @@ class Agent():
         state, actions, new_state, rewards, dones = self.memory.get(
             self.batch_size)
 
-        states = T.from_numpy(state).to(self.q_eval.device) / 255.0
-        states_ = T.from_numpy(new_state).to(self.q_eval.device) / 255.0
+        states = torch.from_numpy(state).to(self.q_eval.device) / 255.0
+        states_ = torch.from_numpy(new_state).to(self.q_eval.device) / 255.0
 
         indices = np.arange(self.batch_size)
 
@@ -189,7 +189,7 @@ class Agent():
         q_next[dones] = 0.0
         if self.double:
             q_eval = self.q_eval.forward(states_)
-            max_actions = T.argmax(q_eval, dim=1)
+            max_actions = torch.argmax(q_eval, dim=1)
             q_next = q_next[indices, max_actions]
         else:
             q_next = q_next.max(-1).values
@@ -218,7 +218,7 @@ if __name__ == '__main__':
     parser.add_argument("--device", type=int, default=0)
     args = parser.parse_args()
 
-    T.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True
 
     try:
         import wandb
@@ -234,8 +234,8 @@ if __name__ == '__main__':
         logger.info(
             "wandb not installed. Code runs fine without logging to the web.")
 
-    device = T.device(
-        args.device) if T.cuda.is_available() else T.device('cpu')
+    device = torch.device(
+        args.device) if torch.cuda.is_available() else torch.device('cpu')
 
     train_env = make_env(args.env_name)
     # eval_env = SubprocVecEnv(
@@ -333,7 +333,7 @@ if __name__ == '__main__':
                 fname += "_linear"
             if args.double:
                 fname += "_double"
-            T.save(agent.q_eval.state_dict(),
+            torch.save(agent.q_eval.state_dict(),
                    f"results/{fname}_{n_env_steps}.pt")
 
     if wandb_run is not None:
