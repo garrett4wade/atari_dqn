@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from core import ReplayBuffer, AtariDQN, DQN
-from env_wrapper import SubprocVecEnv, wrap_deepmind
+from env_wrapper import SubprocVecEnv, wrap_deepmind, make_atari
 
 logging.basicConfig(
     format=
@@ -31,8 +31,8 @@ except ModuleNotFoundError:
 
 
 def make_env(env_name, eval_=False):
-    env = gym.make(env_name)
     if "NoFrameskip" in env_name:
+        env = make_atari(env_name)
         env = wrap_deepmind(env,
                             episode_life=(not eval_),
                             clip_rewards=(not eval_),
@@ -40,6 +40,8 @@ def make_env(env_name, eval_=False):
                             scale=False)
         env = gym.wrappers.TransformObservation(
             env, lambda x: np.transpose(x, (2, 0, 1)))
+    else:
+        env = gym.make(env_name)
     return env
 
 
@@ -147,6 +149,7 @@ class Agent():
                 device=self.device,
             )
 
+    @T.no_grad()
     def choose_action(self, observation, force_random=False, eps=None):
         rnd_action = np.array([
             np.random.choice(self.action_space)
@@ -192,11 +195,10 @@ class Agent():
             q_next = q_next.max(-1).values
         q_target = rewards + self.gamma * q_next
 
-        clipped_error = -1.0 * (q_target.detach() - q_pred).clamp(-1, 1)
-
         # backwards pass
         self.optimizer.zero_grad()
-        q_pred.backward(clipped_error.data)
+        loss = F.smooth_l1_loss(q_pred, q_target.detach())
+        loss.backward()
         self.optimizer.step()
         self.learn_step_counter += 1
 
@@ -244,7 +246,7 @@ if __name__ == '__main__':
     total_env_steps = int(200e6)
     eval_interval = int(2e5)
     log_interval = int(2000)
-    save_interval = eval_interval * 2
+    save_interval = int(4e5)
 
     learning_start = 5e4
     learning_interval = 4
