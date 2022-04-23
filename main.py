@@ -129,9 +129,9 @@ class Agent():
             )
 
         self.optimizer = torch.optim.RMSprop(self.q_eval.parameters(),
-                                         lr=lr,
-                                         alpha=0.95,
-                                         eps=0.01)
+                                             lr=lr,
+                                             alpha=0.95,
+                                             eps=0.01)
 
         if len(self.input_dims) == 1:
             self.q_next = DQN(
@@ -334,7 +334,7 @@ if __name__ == '__main__':
             if args.double:
                 fname += "_double"
             torch.save(agent.q_eval.state_dict(),
-                   f"results/{fname}_{n_env_steps}.pt")
+                       f"results/{fname}_{n_env_steps}.pt")
 
     if wandb_run is not None:
         wandb_run.finish()

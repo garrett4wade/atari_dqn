@@ -37,15 +37,19 @@ def choose_action(q_net, act_dim, observation, epsilon):
     mask = np.random.random(size=(observation.shape[0], )) > epsilon
     return mask * dtm_action + (1 - mask) * rnd_action
 
+
 env = make_env("EnduroNoFrameskip-v4", eval_=True)
 
 device = torch.device(0) if torch.cuda.is_available() else torch.device('cpu')
 
 act_dim = env.action_space.n
 
-
 ckpt_steps = [int(0.4e6), int(1.6e6), int(3.6e6), int(5.6e6)]
-ckpt_prefixes = ["/root/dqn/results/dqn_", "/root/double_dqn/results/dqn_double_", "/root/dueling/results/dqn_double_", "/root/linear/results/dqn_linear_", "/root/linear_double/results/dqn_linear_double_"]
+ckpt_prefixes = [
+    "/root/dqn/results/dqn_", "/root/double_dqn/results/dqn_double_",
+    "/root/dueling/results/dqn_double_", "/root/linear/results/dqn_linear_",
+    "/root/linear_double/results/dqn_linear_double_"
+]
 tags = ['dqn', 'double_dqn', 'dd_dqn', 'linear', 'linear_double']
 
 for gif_idx, step in enumerate(ckpt_steps):
@@ -56,9 +60,8 @@ for gif_idx, step in enumerate(ckpt_steps):
             dueling=("dueling" in prefix),
             device=device,
         )
-        q.load_state_dict(
-            torch.load(prefix + f"{step}.pt",
-                    map_location='cpu'))
+        q.load_state_dict(torch.load(prefix + f"{step}.pt",
+                                     map_location='cpu'))
 
         obs = env.reset()
         frames = []

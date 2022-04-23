@@ -66,8 +66,9 @@ q_eval = AtariDQN(
     device=device,
 )
 q_eval.load_state_dict(
-    torch.load(f"/root/linear_double/results/dqn_linear_double_{int(5.6e6)}.pt",
-               map_location='cpu'))
+    torch.load(
+        f"/root/linear_double/results/dqn_linear_double_{int(5.6e6)}.pt",
+        map_location='cpu'))
 # double dueling 1095.3 (173.4)
 # dqn 967.5 (155.2)
 # doule dqn 596.9 (147.7)
