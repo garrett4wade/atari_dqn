@@ -3,20 +3,8 @@ import torch
 import gym
 
 from core import AtariDQN
-from env_wrapper import SubprocVecEnv, wrap_deepmind
-
-
-def make_env(env_name, eval_=False):
-    env = gym.make(env_name)
-    if "NoFrameskip" in env_name:
-        env = wrap_deepmind(env,
-                            episode_life=(not eval_),
-                            clip_rewards=(not eval_),
-                            frame_stack=True,
-                            scale=False)
-        env = gym.wrappers.TransformObservation(
-            env, lambda x: np.transpose(x, (2, 0, 1)))
-    return env
+from env_wrapper import SubprocVecEnv
+from main import make_env
 
 
 def choose_action(q_net, act_dim, observation, epsilon):
@@ -44,7 +32,7 @@ def eval_dqn(
     running_rewards = np.zeros(eval_env.nenvs, dtype=np.float32)
     running_ep_len = np.zeros(eval_env.nenvs, dtype=np.float32)
     while ep_cnt < n_episodes:
-        action = choose_action(q_net, act_dim, obs, 0.0)
+        action = choose_action(q_net, act_dim, obs, 0.05)
         obs, r, done, info = eval_env.step(action)
         running_rewards += r
         running_ep_len += 1
@@ -73,16 +61,20 @@ act_dim = eval_env.action_space.n
 
 q_eval = AtariDQN(
     act_dim,
-    linear=False,
-    dueling=True,
+    linear=True,
+    dueling=False,
     device=device,
 )
 q_eval.load_state_dict(
-    torch.load(f"endure/double_dqn/results/dqn_double_{int(8.4e6)}.pt",
+    torch.load(f"/root/linear_double/results/dqn_linear_double_{int(5.6e6)}.pt",
                map_location='cpu'))
-# double 216.4 (59.2) eps=0.05 293.0 (0.0) eps=0
-# dqn 166.6 (20.7) eps=0.05 182.0 (0.0) eps=0
-
+# double dueling 1095.3 (173.4)
+# dqn 967.5 (155.2)
+# doule dqn 596.9 (147.7)
+# linear 88.5 (24.0)
+# linear double 81.3 (28.4)
 print("start evaluation ...")
 eval_info = eval_dqn(q_eval, act_dim, eval_env, n_episodes=100)
 print(eval_info)
+
+eval_env.close()
